@@ -1,6 +1,6 @@
 {
   "name": "opencode-9router-quota",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "description": "9Router quota sidebar and custom provider connections for OpenCode v2",
   "repository": {
