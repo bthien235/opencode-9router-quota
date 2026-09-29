@@ -1,0 +1,39 @@
+{
+  "name": "opencode-9router-quota",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "9Router quota sidebar and custom provider connections for OpenCode v2",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bthien235/opencode-9router-quota.git"
+  },
+  "homepage": "https://github.com/bthien235/opencode-9router-quota#readme",
+  "bugs": {
+    "url": "https://github.com/bthien235/opencode-9router-quota/issues"
+  },
+  "keywords": ["opencode", "opencode-plugin", "9router", "quota", "tui"],
+  "files": ["src/index.ts", "src/tui.tsx", "src/quota.ts", "README.md", "docs/MAINTENANCE.md"],
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "bun test src/quota.test.ts",
+    "check": "npm run typecheck && npm run test"
+  },
+  "exports": {
+    ".": "./src/index.ts",
+    "./tui": "./src/tui.tsx"
+  },
+  "dependencies": {
+    "@opencode/plugin": "2.0.18"
+  },
+  "peerDependencies": {
+    "@opentui/core": ">=0.5.12",
+    "@opentui/solid": ">=0.5.12",
+    "solid-js": ">=1.9.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3",
+    "@opentui/core": "^0.5.12",
+    "@opentui/solid": "^0.5.12",
+    "solid-js": "1.9.12"
+  }
+}
