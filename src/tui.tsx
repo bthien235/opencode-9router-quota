@@ -80,6 +80,78 @@ async function fetchAnthropicModels(baseURL: string, apiKey: string): Promise<st
   return arr.map((m: any) => String(m?.id ?? "")).filter(Boolean)
 }
 
+async function upsertGlobalProvider(entry: { id: string; name: string; type: CustomType; baseURL: string; apiKey: string; models: string[] }) {
+  // Server-side provider transform reads server storage, which the TUI cannot
+  // reliably share. Write to the global opencode.json instead, using the same
+  // "provider" + "npm/options/models" shape as existing working 9Router entries.
+  const { readFile, copyFile, writeFile, rename, unlink, chmod, stat } = await import("node:fs/promises")
+  const { join } = await import("node:path")
+  const { homedir } = await import("node:os")
+  const configPath = join(process.env.XDG_CONFIG_HOME || join(homedir(), ".config"), "opencode", "opencode.json")
+  let raw = ""
+  let config: Record<string, any> = {}
+  try {
+    raw = await readFile(configPath, "utf8")
+  } catch {
+    throw new Error("Global opencode.json not found")
+  }
+  try {
+    config = JSON.parse(raw.replace(/^\uFEFF/, ""))
+  } catch {
+    throw new Error("opencode.json is JSONC or invalid; add the provider manually")
+  }
+  if (config.provider != null && (typeof config.provider !== "object" || Array.isArray(config.provider))) {
+    throw new Error("Unexpected provider section; add the provider manually")
+  }
+  config.provider = config.provider ?? {}
+  const modelsObj: Record<string, { name: string }> = {}
+  for (const m of entry.models) modelsObj[m] = { name: m }
+  const baseURL = normBase(entry.baseURL)
+  config.provider[entry.id] =
+    entry.type === "anthropic"
+      ? {
+          npm: "@ai-sdk/anthropic",
+          name: entry.name,
+          options: { ...(baseURL ? { baseURL } : {}), apiKey: entry.apiKey },
+          models: modelsObj,
+        }
+      : {
+          npm: "@ai-sdk/openai-compatible",
+          name: entry.name,
+          options: { baseURL, apiKey: entry.apiKey },
+          models: modelsObj,
+        }
+  if (await readFile(configPath, "utf8") !== raw) throw new Error("Config changed; retry")
+  const backup = `${configPath}.bak-${Date.now()}`
+  try {
+    await copyFile(configPath, backup)
+    await chmod(backup, 0o600)
+  } catch {}
+  const temp = `${configPath}.tmp-${Date.now()}`
+  try {
+    const ending = raw.includes("\r\n") ? "\r\n" : "\n"
+    const prefix = raw.startsWith("\uFEFF") ? "\uFEFF" : ""
+    await writeFile(temp, prefix + JSON.stringify(config, null, 2).replace(/\n/g, ending) + ending, { encoding: "utf8", flag: "wx", mode: 0o600 })
+    try {
+      await chmod(temp, (await stat(configPath)).mode)
+    } catch {}
+    await rename(temp, configPath)
+  } catch (error) {
+    await unlink(temp).catch(() => {})
+    throw error
+  }
+}
+
+async function refreshProviderModelList(ctx: Context) {
+  const loc = ctx.location ?? ctx.data.location.default()
+  try {
+    await ctx.data.location.provider.sync(loc)
+  } catch {}
+  try {
+    await ctx.data.location.model.sync(loc)
+  } catch {}
+}
+
 async function saveConnection(ctx: Context, existing?: CustomProvider) {
   const name = existing?.name ?? await ctx.ui.dialog.prompt({ title: "Provider name", placeholder: "My provider" })
   if (!name) return
@@ -117,7 +189,9 @@ async function saveConnection(ctx: Context, existing?: CustomProvider) {
       draft.items.push({ id, name, type, baseURL: normBase(baseURL), apiKey, models, createdAt: new Date().toISOString() })
     }
   })
-  ctx.ui.toast.show({ message: `${name}: saved`, variant: "success" })
+  await upsertGlobalProvider({ id, name, type, baseURL, apiKey, models })
+  await refreshProviderModelList(ctx)
+  ctx.ui.toast.show({ message: `${name}: saved (${models.length} models). Check /model.`, variant: "success" })
 }
 
 async function chooseCustom(ctx: Context): Promise<CustomProvider | undefined> {
@@ -181,6 +255,7 @@ async function manageConnections(ctx: Context) {
       await unlink(temp).catch(() => {})
       throw error
     }
+    await refreshProviderModelList(ctx)
     ctx.ui.toast.show({ message: `${id}: deleted. Restart OpenCode.`, variant: "success" })
     return
   }
@@ -209,7 +284,40 @@ async function manageConnections(ctx: Context) {
   await update((draft) => {
     draft.items = draft.items.filter((item) => item.id !== provider.id)
   })
-  ctx.ui.toast.show({ message: `${provider.name}: deleted`, variant: "success" })
+  try {
+    const { readFile: rf, copyFile: cf, writeFile: wf, rename: rn, unlink: ul, chmod: cm, stat: st } = await import("node:fs/promises")
+    const { join: jn } = await import("node:path")
+    const { homedir: hd } = await import("node:os")
+    const cfgPath = jn(process.env.XDG_CONFIG_HOME || jn(hd(), ".config"), "opencode", "opencode.json")
+    const cfgRaw = await rf(cfgPath, "utf8").catch(() => "")
+    if (cfgRaw) {
+      const cfg = JSON.parse(cfgRaw.replace(/^\uFEFF/, ""))
+      if (cfg.provider?.[provider.id]) {
+        if (await rf(cfgPath, "utf8") !== cfgRaw) throw new Error("Config changed; retry")
+        try {
+          await cf(cfgPath, `${cfgPath}.bak-${Date.now()}`)
+        } catch {}
+        delete cfg.provider[provider.id]
+        const tmp = `${cfgPath}.tmp-${Date.now()}`
+        try {
+          const ending = cfgRaw.includes("\r\n") ? "\r\n" : "\n"
+          const prefix = cfgRaw.startsWith("\uFEFF") ? "\uFEFF" : ""
+          await wf(tmp, prefix + JSON.stringify(cfg, null, 2).replace(/\n/g, ending) + ending, { encoding: "utf8", flag: "wx", mode: 0o600 })
+          try {
+            await cm(tmp, (await st(cfgPath)).mode)
+          } catch {}
+          await rn(tmp, cfgPath)
+        } catch (error) {
+          await ul(tmp).catch(() => {})
+          throw error
+        }
+      }
+    }
+  } catch (e) {
+    ctx.ui.toast.show({ message: `Storage cleared; config cleanup: ${String((e as Error)?.message ?? e).slice(0, 80)}`, variant: "warning" })
+  }
+  await refreshProviderModelList(ctx)
+  ctx.ui.toast.show({ message: `${provider.name}: deleted. Restart OpenCode if still listed.`, variant: "success" })
 }
 
 function QuotaPanel(props: { ctx: Context }) {
